@@ -17,6 +17,14 @@ OPENROUTER_MODELS = [
     ("Kimi-K2",       "moonshotai/kimi-k2:free"),
     ("Nemotron-70B",  "nvidia/llama-3.1-nemotron-70b-instruct:free"),
     ("Hermes-3-405B", "nousresearch/hermes-3-llama-3.1-405b:free"),
+    ("DeepSeek-R1",   "deepseek/deepseek-r1:free"),
+    ("DeepSeek-V3",   "deepseek/deepseek-chat:free"),
+]
+
+# ── DeepSeek native models (higher rate limits than OpenRouter) ───────────────
+DEEPSEEK_MODELS = [
+    ("DeepSeek-V3", "deepseek-chat"),
+    ("DeepSeek-R1", "deepseek-reasoner"),
 ]
 
 
@@ -74,6 +82,19 @@ def get_available_providers() -> list[Provider]:
                 name=f"OpenRouter · {label}",
                 model=model,
                 client=or_client,
+            ))
+
+    # ── DeepSeek native API ───────────────────────────────────────────────────
+    if settings.deepseek_api_key:
+        ds_client = AsyncOpenAI(
+            base_url="https://api.deepseek.com",
+            api_key=settings.deepseek_api_key,
+        )
+        for label, model in DEEPSEEK_MODELS:
+            providers.append(Provider(
+                name=f"DeepSeek · {label}",
+                model=model,
+                client=ds_client,
             ))
 
     # ── Ollama (one Provider per locally-available model) ─────────────────────
