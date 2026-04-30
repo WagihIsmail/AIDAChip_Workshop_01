@@ -19,12 +19,22 @@ OPENROUTER_MODELS = [
     ("Hermes-3-405B", "nousresearch/hermes-3-llama-3.1-405b:free"),
     ("DeepSeek-R1",   "deepseek/deepseek-r1:free"),
     ("DeepSeek-V3",   "deepseek/deepseek-chat:free"),
+    ("Qwen3-235B",    "qwen/qwen3-235b-a22b:free"),
+    ("Qwen2.5-72B",   "qwen/qwen-2.5-72b-instruct:free"),
+    ("Qwen2.5-Coder", "qwen/qwen-2.5-coder-32b-instruct:free"),
 ]
 
 # ── DeepSeek native models (higher rate limits than OpenRouter) ───────────────
 DEEPSEEK_MODELS = [
     ("DeepSeek-V3", "deepseek-chat"),
     ("DeepSeek-R1", "deepseek-reasoner"),
+]
+
+# ── Qwen native models via Alibaba DashScope ──────────────────────────────────
+QWEN_MODELS = [
+    ("Qwen-Max",    "qwen-max"),
+    ("Qwen-Plus",   "qwen-plus"),
+    ("Qwen-Coder",  "qwen2.5-coder-32b-instruct"),
 ]
 
 
@@ -95,6 +105,19 @@ def get_available_providers() -> list[Provider]:
                 name=f"DeepSeek · {label}",
                 model=model,
                 client=ds_client,
+            ))
+
+    # ── Qwen native API (Alibaba DashScope) ──────────────────────────────────
+    if settings.qwen_api_key:
+        qwen_client = AsyncOpenAI(
+            base_url="https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+            api_key=settings.qwen_api_key,
+        )
+        for label, model in QWEN_MODELS:
+            providers.append(Provider(
+                name=f"Qwen · {label}",
+                model=model,
+                client=qwen_client,
             ))
 
     # ── Ollama (one Provider per locally-available model) ─────────────────────
