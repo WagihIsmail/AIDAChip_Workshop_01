@@ -9,9 +9,12 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
+from agents.auditor import audit_answer
 from agents.orchestrator import orchestrate
 from agents.planner import plan_task
+from agents.refiner import refine_answer
 from agents.runner import collect_results
+from config import settings
 from providers import get_available_providers
 
 app = FastAPI(title="AI Agent Manager")
@@ -55,17 +58,22 @@ async def run_task(request: TaskRequest) -> EventSourceResponse:
             })
             return
 
+        # Assign distinct roles to different providers where possible
+        orchestrator = providers[0]
+        auditor      = providers[-1]                  # last — likely a different model
+        refiner      = providers[len(providers) // 2] # middle — third distinct model
+
         # ── 1. Planning ──────────────────────────────────────────────────────
         yield emit("status", {"stage": "planning", "message": "Analyzing task..."})
         try:
-            plan = await plan_task(request.task, providers[0])
+            plan = await plan_task(request.task, orchestrator)
         except Exception as exc:
             yield emit("error", {"message": f"Planning failed: {exc}"})
             return
 
         yield emit("planning_done", plan.model_dump())
 
-        # ── 2. Sub-agents ────────────────────────────────────────────────────
+        # ── 2. Sub-agents (parallel) ─────────────────────────────────────────
         n = len(plan.sub_tasks)
         yield emit("status", {
             "stage": "running",
@@ -73,7 +81,6 @@ async def run_task(request: TaskRequest) -> EventSourceResponse:
         })
 
         queue: asyncio.Queue[dict] = asyncio.Queue()
-
         runner_task = asyncio.create_task(
             collect_results(plan.sub_tasks, providers, queue)
         )
@@ -91,24 +98,69 @@ async def run_task(request: TaskRequest) -> EventSourceResponse:
         if n > 1:
             yield emit("status", {
                 "stage": "orchestrating",
-                "message": "Synthesizing results...",
+                "message": f"Synthesizing results ({orchestrator.name})...",
             })
             try:
-                final_answer = await orchestrate(
-                    request.task, plan.sub_tasks, results, providers[0]
+                current_answer = await orchestrate(
+                    request.task, plan.sub_tasks, results, orchestrator
                 )
             except Exception as exc:
                 yield emit("error", {"message": f"Orchestration failed: {exc}"})
                 return
         else:
-            # Single sub-task — no synthesis needed
-            final_answer = results.get(plan.sub_tasks[0].id, "")
+            current_answer = results.get(plan.sub_tasks[0].id, "")
 
-        yield emit("done", {"final_answer": final_answer})
+        # ── 4. Audit → Refine loop ────────────────────────────────────────────
+        max_iter = settings.max_audit_iterations
+        for iteration in range(max_iter):
+            round_num = iteration + 1
+
+            yield emit("status", {
+                "stage": "auditing",
+                "message": f"Auditing answer — round {round_num}/{max_iter} ({auditor.name})...",
+            })
+            try:
+                audit = await audit_answer(request.task, current_answer, auditor)
+            except Exception as exc:
+                yield emit("error", {"message": f"Audit failed: {exc}"})
+                return
+
+            yield emit("audit_done", {
+                "iteration": round_num,
+                "score": audit.score,
+                "passed": audit.passed,
+                "issues": audit.issues,
+                "suggestions": audit.suggestions,
+                "summary": audit.summary,
+                "provider": auditor.name,
+            })
+
+            if audit.passed:
+                break
+
+            # Still more iterations left — refine
+            if iteration < max_iter - 1:
+                yield emit("status", {
+                    "stage": "refining",
+                    "message": f"Refining answer — round {round_num} ({refiner.name})...",
+                })
+                try:
+                    current_answer = await refine_answer(
+                        request.task, current_answer, audit, refiner
+                    )
+                except Exception as exc:
+                    yield emit("error", {"message": f"Refinement failed: {exc}"})
+                    return
+
+                yield emit("refine_done", {
+                    "iteration": round_num,
+                    "provider": refiner.name,
+                })
+
+        yield emit("done", {"final_answer": current_answer})
 
     return EventSourceResponse(generate())
 
 
 if __name__ == "__main__":
-    from config import settings
     uvicorn.run("main:app", host=settings.host, port=settings.port, reload=True)
